@@ -9,6 +9,7 @@ from collections import deque
 BUFFER_SIZE = 5          # Max packets the router can hold
 TOTAL_PACKETS = 50000        # Total packets to simulate per method
 CHOKE_THRESHOLD = 10      # If buffer has >10 packets, trigger CHOKE
+ROUTER_SPEED = 0.7  # The router is slower than the traffic (70% capacity)
 
 # Weights for WFQ (Higher isn't always better in formula, see explanation below)
 # In WFQ, we divide packet length by weight. Larger weight = Smaller Finish Time = Served Faster.
@@ -27,6 +28,11 @@ class Packet:
         
     def __repr__(self):
         return f"[{self.type}#{self.id}]"
+
+    # --- THE FIX IS HERE ---
+    def __lt__(self, other):
+        # If finish times are equal, the packet with the smaller ID goes first.
+        return self.id < other.id
 
 # ==========================================
 # 3. HELPER: TRAFFIC GENERATOR
@@ -67,6 +73,34 @@ def run_baseline(packets):
             
     return served, dropped
 
+def run_baseline_congested(packets):
+    print(f"\n--- RUNNING BASELINE (Congested) ---")
+    buffer = deque()
+    dropped = 0
+    served = 0
+    
+    for p in packets:
+        # --- CHANGE 1: SIMULATE SLOW ROUTER ---
+        # Only process a packet 70% of the time. 
+        # 30% of the time, the router is "busy" and nothing leaves, but new packets keep coming.
+        if buffer and random.random() < ROUTER_SPEED:
+            buffer.popleft()
+            served += 1
+            
+        # 2. Try to Enqueue (This happens every single time, 100% rate)
+        if len(buffer) < BUFFER_SIZE:
+            buffer.append(p)
+        else:
+            dropped += 1 # NOW this will actually happen!
+            
+    # --- CHANGE 2: FLUSH THE BUFFER (Fixing the 49999 issue) ---
+    # After traffic stops, finish processing whatever is left in the queue
+    while buffer:
+        buffer.popleft()
+        served += 1
+            
+    return served, dropped
+
 # --- METHOD B: CHOKE PACKET (Gold Protected) ---
 def run_choke_packet(packets):
     print(f"\n--- RUNNING CHOKE PACKET METHOD ---")
@@ -77,7 +111,7 @@ def run_choke_packet(packets):
     
     for p in packets:
         # 1. Service a packet
-        if buffer:
+        if buffer and random.random() < ROUTER_SPEED: 
             buffer.popleft()
             served += 1
         
@@ -129,10 +163,9 @@ def run_token_bucket(packets):
             buckets[type][0] = min(cap, cur + rate) # Add tokens, don't exceed max
             
         # 2. Service Packet from buffer
-        if buffer:
+        if buffer and random.random() < ROUTER_SPEED: 
             buffer.popleft()
             served += 1
-            
         # 3. Admission (Need a token to enter buffer)
         needed_tokens = 1 # Each packet costs 1 token
         
@@ -161,10 +194,12 @@ def run_wfq(packets):
     
     for p in packets:
         # 1. Service (Process the packet with SMALLEST finish time)
-        if priority_queue:
+        #if priority_queue:
+         #   heapq.heappop(priority_queue)
+          #  served += 1
+        if priority_queue and random.random() < ROUTER_SPEED:
             heapq.heappop(priority_queue)
-            served += 1
-            
+            served += 1 
         # 2. Calculate Finish Time (The Mathematical Formula)
         # Formula: Finish = max(Arrival, Previous_Finish) + (Length / Weight)
         # Since arrival is essentially 'now' in this loop:
@@ -193,7 +228,7 @@ if __name__ == "__main__":
     traffic_data = generate_traffic(TOTAL_PACKETS)
     
     # Run all 4
-    base_s, base_d = run_baseline(traffic_data.copy())
+    base_s, base_d = run_baseline_congested(traffic_data.copy())
     choke_s, choke_d = run_choke_packet(traffic_data.copy())
     token_s, token_d = run_token_bucket(traffic_data.copy())
     wfq_s,   wfq_d   = run_wfq(traffic_data.copy())
