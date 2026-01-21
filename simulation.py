@@ -6,9 +6,9 @@ from collections import deque
 # ==========================================
 # 1. CONFIGURATION & CONSTANTS
 # ==========================================
-BUFFER_SIZE = 5          # Max packets the router can hold
+BUFFER_SIZE = 20          # Max packets the router can hold
 TOTAL_PACKETS = 50000        # Total packets to simulate per method
-CHOKE_THRESHOLD = 10      # If buffer has >10 packets, trigger CHOKE
+CHOKE_THRESHOLD = 8      # If buffer has >10 packets, trigger CHOKE
 ROUTER_SPEED = 0.7  # The router is slower than the traffic (70% capacity)
 
 # Weights for WFQ (Higher isn't always better in formula, see explanation below)
@@ -38,12 +38,12 @@ class Packet:
 # 3. HELPER: TRAFFIC GENERATOR
 # ==========================================
 def generate_traffic(n):
-    """Generates a mixed list of Gold, Silver, and Bronze packets."""
     packets = []
     types = ['Gold', 'Silver', 'Bronze']
+    # Weights: 20% Gold, 30% Silver, 50% Bronze
     for i in range(n):
-        p_type = random.choice(types)
-        packets.append(Packet(i, p_type, i)) # Arrival time implies order 'i'
+        p_type = random.choices(types, weights=[20, 30, 50], k=1)[0]
+        packets.append(Packet(i, p_type, i))
     return packets
 
 def init_stats():
@@ -135,9 +135,9 @@ def run_token_bucket(packets):
     print("Running Token Bucket...")
     # [Current Tokens, Max Capacity, Refill Rate]
     buckets = {
-        'Gold':   [10, 10, 2.0], 
-        'Silver': [5,  5,  1.0], 
-        'Bronze': [2,  2,  0.5] 
+        'Gold':   [10, 10, 5.0], 
+        'Silver': [5,  5,  0.5], 
+        'Bronze': [2,  2,  0.2] 
     }
     
     buffer = deque()
@@ -188,23 +188,45 @@ def run_wfq(packets):
             
         # 2. Calculate Finish Time
         prev_f = last_finish[p.type]
-        weight = WEIGHTS[p.type]
-        # virtual_finish = max(arrival, prev_finish) + (size / weight)
-        virtual_finish = max(p.arrival_time, prev_f) + (p.size / weight)
-        
+        virtual_finish = max(p.arrival_time, prev_f) + (p.size / WEIGHTS[p.type])
         p.finish_time = virtual_finish
         last_finish[p.type] = virtual_finish
         
-        # 3. Enqueue
         if len(priority_queue) < BUFFER_SIZE:
             heapq.heappush(priority_queue, (p.finish_time, p))
         else:
-            stats[p.type]['dropped'] += 1
+            # Buffer is Full. 
+            # If I am Gold, and there is a Bronze in the queue, KILL THE BRONZE.
+            if p.type == 'Gold':
+                # Find a victim (Start from end of heap/list)
+                victim_index = -1
+                for i, item in enumerate(priority_queue):
+                    if item[1].type == 'Bronze': # item is (finish_time, packet)
+                        victim_index = i
+                        break
+                
+                if victim_index != -1:
+                    # Remove victim
+                    victim = priority_queue.pop(victim_index)
+                    heapq.heapify(priority_queue) # Re-sort heap
+                    
+                    # Record the murder
+                    stats['Bronze']['dropped'] += 1
+                    stats['Bronze']['served'] -= 0 # Was never served, just removed
+                    
+                    # Add Gold
+                    heapq.heappush(priority_queue, (p.finish_time, p))
+                else:
+                    # No Bronze to kill? Try killing Silver?
+                    # For now, just drop Gold if no Bronzes exist
+                    stats['Gold']['dropped'] += 1
+            else:
+                # If I'm not Gold and buffer is full, bye bye.
+                stats[p.type]['dropped'] += 1
             
     while priority_queue:
         _, proc_p = heapq.heappop(priority_queue)
         stats[proc_p.type]['served'] += 1
-            
     return stats
 
 # ==========================================
@@ -226,11 +248,12 @@ if __name__ == "__main__":
         # Calculate percentages
         g_loss = (gd / (gs+gd)*100) if (gs+gd) else 0
         b_loss = (bd / (bs+bd)*100) if (bs+bd) else 0
+        s_loss = (sd / (ss+sd)*100) if (ss+sd) else 0
         
-        print(f"{name:<15} | {gs:>5} {gd:>5} | {ss:>5} {sd:>5} | {bs:>5} {bd:>5} | {g_loss:>6.1f}% | {b_loss:>6.1f}%")
+        print(f"{name:<15} | {gs:>5} {gd:>5} | {ss:>5} {sd:>5} | {bs:>5} {bd:>5} | {g_loss:>6.1f}% | {s_loss:>6.1f}% | {b_loss:>6.1f}%")
 
     print(f"\n{'='*85}")
-    print(f"{'METHOD':<15} | {'GOLD (S/D)':^11} | {'SILVER (S/D)':^11} | {'BRONZE (S/D)':^11} | {'G LOSS':^7} | {'B LOSS':^7}")
+    print(f"{'METHOD':<15} | {'GOLD (S/D)':^11} | {'SILVER (S/D)':^11} | {'BRONZE (S/D)':^11} | {'G LOSS':^7} | {'S LOSS':^7} | {'B LOSS':^7}")
     print(f"{'-'*85}")
     
     print_row("Baseline", s_base)
