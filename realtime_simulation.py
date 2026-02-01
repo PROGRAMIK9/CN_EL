@@ -1,5 +1,6 @@
 import random
 import heapq
+import copy
 from collections import deque
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -238,7 +239,6 @@ def update(frame):
     for i, sim in enumerate(sims):
         # We must copy packets because WFQ modifies them (finish_time)
         # and lists are mutable
-        import copy
         sim_packets = copy.deepcopy(new_packets)
         
         for p in sim_packets:
