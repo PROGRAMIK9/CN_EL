@@ -1,4 +1,3 @@
-import time
 import random
 import heapq
 from collections import deque
